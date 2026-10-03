@@ -85,6 +85,14 @@ def createChromeSession(isRetry: bool = False):
     # "--headless" is the legacy mode and is trivially detectable, "=new" runs the real browser.
     if run_in_background:   options.add_argument("--headless=new")
     if disable_extensions:  options.add_argument("--disable-extensions")
+    # Pin the UI language to Spanish so LinkedIn renders the labels this bot's selectors
+    # expect ("Todos los filtros", "Ciudad, departamento o código postal", "Siguiente"...).
+    options.add_argument("--lang=es-ES")
+    try:
+        options.add_experimental_option("prefs", {"intl.accept_languages": "es-ES,es"})
+    except Exception as e:
+        # uc.ChromeOptions supports this, but guard anyway so a future API change can't crash startup.
+        logger.warning("Couldn't set Accept-Language pref to Spanish (%s). LinkedIn may render in the OS language.", type(e).__name__)
 
     print_lg("IF YOU HAVE MORE THAN 10 TABS OPENED, PLEASE CLOSE OR BOOKMARK THEM! Or it's highly likely that application will just open browser and not do anything!")
     profile_dir = find_default_profile_directory()
@@ -93,8 +101,14 @@ def createChromeSession(isRetry: bool = False):
     elif profile_dir and not safe_mode:
         options.add_argument(f"--user-data-dir={profile_dir}")
     else:
-        print_lg("Logging in with a guest profile, Web history will not be saved!")
-        options.add_argument(f"--user-data-dir={get_default_temp_profile()}")
+        # NOT a throwaway profile: this is a dedicated, PERSISTENT profile dir of the bot's
+        # own (e.g. C:\temp\auto-job-apply-profile). Your LinkedIn session is saved there
+        # between runs, so you only need to pass the security check / 2FA ONCE. It just
+        # avoids the lock conflict and the UC "chrome not reachable" failure that happens
+        # when pointing --user-data-dir at your real, in-use Chrome profile.
+        temp_profile = get_default_temp_profile()
+        print_lg(f"Using the bot's dedicated Chrome profile at '{temp_profile}'. Your login is saved here between runs, so you only sign in once.")
+        options.add_argument(f"--user-data-dir={temp_profile}")
     if auto_manage_driver:
         print_lg("Setting up the matching Chrome driver... This may take some time (this happens each run when auto_manage_driver is enabled).")
         driver_path = get_managed_driver_path()

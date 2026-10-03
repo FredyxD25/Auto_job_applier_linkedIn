@@ -142,7 +142,11 @@ legally_authorized = globals().get("legally_authorized", "Yes")
 # ids that are regenerated useId() values. Visible text is the only stable handle left, and it
 # has to be an EXACT match - "Sign in with Apple" sits above the real button in the DOM and a
 # contains() would pick that one.
-sign_in_button_xpath = '//button[normalize-space(.)="Sign in"]'
+# LinkedIn serves the login page in the browser's locale (e.g. /login/es/), so the button text
+# is localized. Match the known labels across languages by EXACT text, never contains(), so the
+# "...with Apple" / "...con Apple" variants above it in the DOM are not picked up.
+sign_in_button_labels = ["Sign in", "Iniciar sesión", "Entrar", "Se connecter", "Anmelden", "Accedi", "Entrar", "登录", "Fazer login"]
+sign_in_button_xpath = "//button[" + " or ".join(f'normalize-space(.)="{label}"' for label in sign_in_button_labels) + "]"
 # The same rewrite removed id="username" / id="password" and name="session_key". `type` is all
 # that is left, and the page renders a hidden duplicate of both fields - hence first-displayed.
 login_email_css = "input[type='email']"
@@ -168,12 +172,25 @@ def is_logged_in_LN() -> bool:
     '''
     # The feed URL now carries query params (?trk=...), so match a prefix, not the whole URL.
     if driver.current_url.startswith("https://www.linkedin.com/feed"): return True
-    if try_linkText(driver, "Sign in"): return False
+    # LinkedIn serves the login page in the browser locale (e.g. /login/es/), so link/button
+    # TEXT like "Sign in" / "Join now" is localized and can't be matched by a hardcoded English
+    # string. Detect "not logged in" by language-independent signals instead:
+    #   1) The localized Sign in button (sign_in_button_xpath covers several languages).
+    #   2) The login email/password inputs, which are selected by @type, not by text.
     # click=False: this is a check, it must not press Sign in as a side effect.
     if try_xp(driver, sign_in_button_xpath, False):  return False
-    if try_linkText(driver, "Join now"): return False
-    print_lg("Didn't find Sign in link, so assuming user is logged in!")
-    return True
+    if try_xp(driver, "//input[@type='password']", False): return False
+    if try_xp(driver, "//input[@type='email' or @id='username' or @name='session_key']", False): return False
+    # The URL itself is a strong signal: any /login or /uas/login path means not logged in.
+    url = driver.current_url
+    if "/login" in url or "/uas/login" in url or "linkedin.com/checkpoint" in url: return False
+    # Affirmative proof of a real session: the global nav bar / "Me" menu only render when
+    # authenticated. If neither a sign-in affordance nor a session marker is found, be
+    # conservative and report NOT logged in so login_LN() runs rather than skipping it.
+    if try_xp(driver, "//*[contains(@class,'global-nav')]", False): return True
+    if try_xp(driver, "//button[contains(@class,'global-nav__primary-link-me-menu-trigger') or @aria-label='View profile']", False): return True
+    print_lg("No session markers and no sign-in link found; assuming NOT logged in to be safe.")
+    return False
 
 
 def login_LN() -> None:
@@ -191,18 +208,23 @@ def login_LN() -> None:
         manual_login_retry(is_logged_in_LN, 2)
         return
     try:
-        wait.until(EC.presence_of_element_located((By.LINK_TEXT, "Forgot password?")))
+        # Don't wait on the "Forgot password?" link: its text is localized (e.g.
+        # "¿Olvidaste la contraseña?" on /login/es/) and matching it in English fails on
+        # every non-English locale. Wait on the password input instead - selected by @type,
+        # so it's language-independent. Give it a generous timeout; the login page can be slow.
+        WebDriverWait(driver, 30).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, login_password_css)))
         try:
-            fill_visible_input(By.CSS_SELECTOR, login_email_css, username)
+            fill_visible_input(By.CSS_SELECTOR, login_email_css, username, time=20)
         except Exception as e:
             logger.warning("Couldn't find username field. %s", e)
         try:
-            fill_visible_input(By.CSS_SELECTOR, login_password_css, password)
+            fill_visible_input(By.CSS_SELECTOR, login_password_css, password, time=20)
         except Exception as e:
             logger.warning("Couldn't find password field. %s", e)
-        # Find the login submit button and click it. Only one of the duplicated "Sign in"
+        # Find the login submit button and click it. Only one of the localized "Sign in"
         # buttons is on screen, so this has to click the displayed one.
-        if not wait_xp_click(driver, sign_in_button_xpath):
+        if not wait_xp_click(driver, sign_in_button_xpath, time=20):
             raise NoSuchElementException("No visible Sign in button on the login page")
     except Exception as e1:
         try:
@@ -212,11 +234,13 @@ def login_LN() -> None:
             logger.warning("Couldn't Login! %s %s", e1, e2)
 
     try:
-        # Wait until we land on the feed. That URL now carries query params, so match a prefix.
-        wait.until(EC.url_contains("linkedin.com/feed"))
+        # Wait until we land on the feed. Generous timeout so you have time to clear any
+        # security check / 2FA / captcha LinkedIn throws after submitting the credentials.
+        # That URL now carries query params, so match a prefix.
+        WebDriverWait(driver, 120).until(EC.url_contains("linkedin.com/feed"))
         return print_lg("Login successful!")
     except Exception as e:
-        logger.warning("Seems like login attempt failed! Possibly due to wrong credentials or already logged in! Try logging in manually! %s", e)
+        logger.warning("Seems like login attempt failed! Possibly due to wrong credentials or a security check! Try logging in manually! %s", e)
         manual_login_retry(is_logged_in_LN, 2)
 #>
 
@@ -322,7 +346,7 @@ def apply_filters() -> None:
 
     except Exception as e:
         logger.warning("Setting the preferences failed!")
-        pyautogui.confirm(f"Faced error while applying filters. Please make sure correct filters are selected, click on show results and click on any button of this dialog, I know it sucks. Can't turn off Pause after search when error occurs! ERROR: {e}", ["Doesn't look good, but Continue XD", "Look's good, Continue"])
+        pyautogui.confirm(f"Faced error while applying filters. Please make sure correct filters are selected, click on show results and click on any button of this dialog, I know it sucks. Can't turn off Pause after search when error occurs! ERROR: {e}", "Error applying filters", ["Doesn't look good, but Continue XD", "Look's good, Continue"])
         # print_lg(e)
 
 
@@ -1493,7 +1517,6 @@ def run(total_runs: int) -> int:
 linkedIn_tab = False
 
 def main() -> None:
-    pyautogui.alert("Please consider sponsoring this project at:\n\nhttps://github.com/sponsors/GodsScion\n\n", "Support the project", "Okay")
     total_runs = 1
     try:
         global linkedIn_tab, tabs_count, useNewResume, aiClient

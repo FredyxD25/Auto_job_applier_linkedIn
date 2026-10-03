@@ -22,3 +22,7 @@ apikeys.py
 user_config.json
 .bot_run.log
 .bot_run.pid
+
+# Personal resume/CV files in the project root — contain personal data, never commit
+Fredy_Camacho_CV_Ingeniero_Datos_2026_09_22.pdf
+/*_CV_*.pdf
