@@ -123,12 +123,18 @@ def multi_sel_noWait(driver: WebDriver, texts: list, actions: ActionChains = Non
             if actions: company_search_click(driver,actions,text)
             else:   logger.warning("Click Failed! Didn't find '%s' (%s)", text, type(e).__name__)
 
-def boolean_button_click(driver: WebDriver, actions: ActionChains, text: str) -> None:
+def boolean_button_click(driver: WebDriver, actions: ActionChains, text: str | list[str]) -> None:
     '''
     Tries to click on the boolean button with the given `text` text.
+    - `text` may be a single label or a list of accepted labels (e.g. inglés y español): the
+      `<h3>` xpath is built as the union (`or`) of each label's `text_xpath`, so the toggle is
+      found whether LinkedIn renders in English or Spanish.
     '''
     try:
-        list_container = driver.find_element(By.XPATH, text_xpath("h3", text) + '/ancestor::fieldset')
+        labels = [text] if isinstance(text, str) else text
+        # Une las variantes de idioma con "or": matchea el <h3> con cualquiera de los labels.
+        h3_xpath = "(" + " | ".join(text_xpath("h3", label) for label in labels) + ")"
+        list_container = driver.find_element(By.XPATH, h3_xpath + '/ancestor::fieldset')
         # The switch input itself is often visually hidden by design, so don't filter it on displayed.
         button = list_container.find_element(By.XPATH, './/input[@role="switch"]')
         scroll_to_view(driver, button)

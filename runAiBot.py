@@ -270,7 +270,9 @@ def set_search_location() -> None:
     if search_location.strip():
         try:
             print_lg(f'Setting search location as: "{search_location.strip()}"')
-            search_location_ele = try_xp(driver, ".//input[@aria-label='City, state, or zip code'and not(@disabled)]", False) #  and not(@aria-hidden='true')]")
+            # Input bilingüe. NECESITA VERIFICACIÓN EN RUNTIME: aria-label en español sin confirmar
+            # ("Ciudad, estado o código postal" es la traducción esperada de "City, state, or zip code").
+            search_location_ele = try_xp(driver, ".//input[(@aria-label='City, state, or zip code' or @aria-label='Ciudad, estado o código postal') and not(@disabled)]", False) #  and not(@aria-hidden='true')]")
             text_input(actions, search_location_ele, search_location, "Search Location")
         except ElementNotInteractableException:
             try_xp(driver, ".//label[@class='jobs-search-box__input-icon jobs-search-box__keywords-label']")
@@ -279,15 +281,49 @@ def set_search_location() -> None:
             human_type(actions, search_location.strip())
             sleep(2)
             actions.send_keys(Keys.ENTER).perform()
-            try_xp(driver, ".//button[@aria-label='Cancel']")
+            # Botón Cancel bilingüe: "Cancel" (EN) o "Cancelar" (ES).
+            try_xp(driver, ".//button[@aria-label='Cancel' or @aria-label='Cancelar']")
         except Exception as e:
-            try_xp(driver, ".//button[@aria-label='Cancel']")
+            try_xp(driver, ".//button[@aria-label='Cancel' or @aria-label='Cancelar']")
             logger.warning("Failed to update search location, continuing with default location! %s", e)
 
 
 def recommended_filter_wait(gap: int) -> int:
     '''Pause between filter sections; only skipped when the user asked for no click gap at all.'''
     return 0 if gap < 1 else 1
+
+
+# Localización ES de valores de filtro que vienen de config/search.py en inglés.
+# Decisión (ver .agents/tasks/plan-localizacion-es.md): NO se reescribe la config del usuario.
+# Cada valor en inglés mapea a [inglés, español] y en runtime se prueban ambas variantes contra
+# la UI (que puede estar en inglés o en español). Un valor que no esté en el mapa se usa tal cual.
+# NECESITA VERIFICACIÓN EN RUNTIME: las etiquetas en español de abajo son las habituales de la UI
+# de LinkedIn en español pero no se pudieron confirmar con un login real (el usuario tiene 2FA).
+filter_label_translations: dict[str, list[str]] = {
+    # sort_by
+    "Most recent": ["Most recent", "Más recientes"],
+    "Most relevant": ["Most relevant", "Más relevantes"],
+    # date_posted
+    "Any time": ["Any time", "En cualquier momento"],
+    "Past month": ["Past month", "Último mes"],
+    "Past week": ["Past week", "Última semana"],
+    "Past 24 hours": ["Past 24 hours", "Últimas 24 horas"],
+}
+
+
+def click_filter_option(driver: WebDriver, value: str, time: float = 5.0) -> WebElement | bool:
+    '''
+    Clicks a filter option (`sort_by`, `date_posted`, `salary`) whose visible label is `value`
+    in `config/search.py` (English). Tries each accepted variant (English then Spanish) from
+    `filter_label_translations` so the bot works whether LinkedIn renders in English or Spanish.
+    - Returns the clicked `WebElement`, or `False` if no variant matched.
+    - `salary` and any value absent from the map are tried as-is (same label in both languages).
+    '''
+    if not value: return False
+    for label in filter_label_translations.get(value, [value]):
+        result = wait_span_click(driver, label, time)
+        if result: return result
+    return False
 
 
 def apply_filters() -> None:
@@ -300,11 +336,13 @@ def apply_filters() -> None:
         recommended_wait = recommended_filter_wait(click_gap)
 
         # element_to_be_clickable, not presence: the filters button renders before it's usable.
-        wait.until(EC.element_to_be_clickable((By.XPATH, '//button[normalize-space()="All filters"]'))).click()
+        # Botón bilingüe: "All filters" (EN) o "Todos los filtros" (ES).
+        wait.until(EC.element_to_be_clickable((By.XPATH, '//button[normalize-space()="All filters" or normalize-space()="Todos los filtros"]'))).click()
         buffer(recommended_wait)
 
-        wait_span_click(driver, sort_by)
-        wait_span_click(driver, date_posted)
+        # Traduce el valor de config (inglés) al label visible en español antes de clickar.
+        click_filter_option(driver, sort_by)
+        click_filter_option(driver, date_posted)
         buffer(recommended_wait)
 
         multi_sel_noWait(driver, experience_level) 
@@ -315,7 +353,8 @@ def apply_filters() -> None:
         multi_sel_noWait(driver, on_site)
         if job_type or on_site: buffer(recommended_wait)
 
-        if easy_apply_only: boolean_button_click(driver, actions, "Easy Apply")
+        # Toggles booleanos bilingües: se pasa [inglés, español] y boolean_button_click prueba ambos.
+        if easy_apply_only: boolean_button_click(driver, actions, ["Easy Apply", "Solicitud sencilla"])
         
         multi_sel_noWait(driver, location)
         multi_sel_noWait(driver, industry)
@@ -325,18 +364,23 @@ def apply_filters() -> None:
         multi_sel_noWait(driver, job_titles)
         if job_function or job_titles: buffer(recommended_wait)
 
-        if under_10_applicants: boolean_button_click(driver, actions, "Under 10 applicants")
-        if in_your_network: boolean_button_click(driver, actions, "In your network")
-        if fair_chance_employer: boolean_button_click(driver, actions, "Fair Chance Employer")
+        # NECESITA VERIFICACIÓN EN RUNTIME: labels en español de estos toggles sin confirmar.
+        if under_10_applicants: boolean_button_click(driver, actions, ["Under 10 applicants", "Menos de 10 solicitantes"])
+        if in_your_network: boolean_button_click(driver, actions, ["In your network", "En tu red"])
+        if fair_chance_employer: boolean_button_click(driver, actions, ["Fair Chance Employer", "Empleador con igualdad de oportunidades"])
 
-        wait_span_click(driver, salary)
+        # salary usa el mismo formato ($) en ambos idiomas; se pasa por el mismo helper por consistencia.
+        click_filter_option(driver, salary)
         buffer(recommended_wait)
         
         multi_sel_noWait(driver, benefits)
         multi_sel_noWait(driver, commitments)
         if benefits or commitments: buffer(recommended_wait)
 
-        show_results_button: WebElement = wait.until(EC.element_to_be_clickable((By.XPATH, '//button[contains(translate(@aria-label, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "apply current filters to show")]')))
+        # Botón "Ver resultados": aria-label EN "Apply current filters to show N results".
+        # NECESITA VERIFICACIÓN EN RUNTIME: substring exacto del aria-label en español sin confirmar;
+        # se usa "resultados" / "mostrar" como substrings robustos (contains, minúsculas) además del EN.
+        show_results_button: WebElement = wait.until(EC.element_to_be_clickable((By.XPATH, '//button[contains(translate(@aria-label, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "apply current filters to show") or contains(translate(@aria-label, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "mostrar") or contains(translate(@aria-label, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "resultados")]')))
         show_results_button.click()
         buffer(3)   # let the results reload settle before anything reads the list
 
@@ -986,7 +1030,9 @@ def answer_questions(modal: WebElement, questions_list: set, work_location: str,
 
     # Select todays date. Scoped to the modal: on `driver` this clicked any date picker
     # anywhere on the page. It does mean to click, so click stays True here.
-    try_xp(modal, ".//button[contains(@aria-label, 'This is today')]")
+    # Botón "hoy" del date picker, bilingüe. NECESITA VERIFICACIÓN EN RUNTIME: texto ES exacto
+    # sin confirmar; se usa el substring robusto "hoy" (contains) además del aria-label EN.
+    try_xp(modal, ".//button[contains(@aria-label, 'This is today') or contains(@aria-label, 'hoy')]")
 
     # Collect important skills
     # if 'do you have' in label and 'experience' in label and ' in ' in label -> Get word (skill) after ' in ' from label
@@ -1020,7 +1066,8 @@ def external_apply(pagination_element: WebElement, job_id: str, job_link: str, r
         # The design-system button SIZE class this used to also require (artdeco-button--<n>)
         # has nothing to do with applying and churns with every restyle, so it's gone.
         wait.until(EC.element_to_be_clickable((By.XPATH, apply_button_xpath))).click()
-        wait_span_click(driver, "Continue", 1, True, False)
+        # "Continue" (EN) o "Continuar" (ES) en el aviso de salida a sitio externo.
+        wait_span_click(driver, "Continue", 1, True, False) or wait_span_click(driver, "Continuar", 1, True, False)
         windows = driver.window_handles
         tabs_count = len(windows)
         driver.switch_to.window(windows[-1])
@@ -1042,9 +1089,12 @@ def external_apply(pagination_element: WebElement, job_id: str, job_link: str, r
 # Easy Apply modal buttons. All of these are `type="button"`, so type is no help, and all of
 # them must be searched INSIDE the dialog: document-wide, "Next" also matches the search
 # results pagination control (aria-label "View next page").
-next_button_xpath = './/button[@aria-label="Continue to next step" or contains(normalize-space(.), "Next")]'
-review_button_xpath = './/button[@aria-label="Review your application" or normalize-space(.)="Review"]'
-submit_button_xpath = './/button[@aria-label="Submit application" or normalize-space(.)="Submit application"]'
+# Variantes bilingües (EN or ES). NECESITA VERIFICACIÓN EN RUNTIME: los aria-label/textos en
+# español ("Continuar al siguiente paso", "Siguiente", "Revisar tu solicitud", "Revisar",
+# "Enviar solicitud") son los esperados pero no se confirmaron con login real (2FA).
+next_button_xpath = './/button[@aria-label="Continue to next step" or @aria-label="Continuar al siguiente paso" or contains(normalize-space(.), "Next") or contains(normalize-space(.), "Siguiente")]'
+review_button_xpath = './/button[@aria-label="Review your application" or @aria-label="Revisar tu solicitud" or normalize-space(.)="Review" or normalize-space(.)="Revisar"]'
+submit_button_xpath = './/button[@aria-label="Submit application" or @aria-label="Enviar solicitud" or normalize-space(.)="Submit application" or normalize-space(.)="Enviar solicitud"]'
 
 # Easy Apply detection strategies, tried in order, most stable signal first. The button also
 # still says "Easy Apply" in its aria-label - the widely repeated claim that LinkedIn dropped
@@ -1055,8 +1105,10 @@ easy_apply_locators = [
     ("apply button id", ".//button[@id='jobs-apply-button-id']"),
     # ponytail: not seen in the captured DOM, kept as a cheap extra shot before the classes.
     ("in-app apply URL flag", ".//a[contains(@href, 'openSDUIApplyFlow=true')]"),
-    ("aria-label", ".//button[contains(@class,'jobs-apply-button') and contains(@aria-label, 'Easy Apply')]"),
-    ("button label", ".//button[contains(@class,'jobs-apply-button')][.//span[contains(normalize-space(.), 'Easy Apply')]]"),
+    # Variantes bilingües del texto "Easy Apply" / "Solicitud sencilla".
+    # NECESITA VERIFICACIÓN EN RUNTIME: "Solicitud sencilla" es la traducción esperada sin confirmar.
+    ("aria-label", ".//button[contains(@class,'jobs-apply-button') and (contains(@aria-label, 'Easy Apply') or contains(@aria-label, 'Solicitud sencilla'))]"),
+    ("button label", ".//button[contains(@class,'jobs-apply-button')][.//span[contains(normalize-space(.), 'Easy Apply') or contains(normalize-space(.), 'Solicitud sencilla')]]"),
     ("apply button", apply_button_xpath),
 ]
 
@@ -1141,8 +1193,9 @@ def submitted_jobs(job_id: str, title: str, company: str, work_location: str, wo
 
 
 # The "Save this application?" confirmation that the modal's Dismiss button raises.
-# `data-control-name` is the language-independent anchor; the text is the fallback.
-discard_button_xpath = ".//button[@data-control-name='discard_application_confirm_btn' or contains(normalize-space(.), 'Discard')]"
+# `data-control-name` is the language-independent anchor (ya cubre ES); el texto es fallback
+# bilingüe: "Discard" (EN) o "Descartar" (ES).
+discard_button_xpath = ".//button[@data-control-name='discard_application_confirm_btn' or contains(normalize-space(.), 'Discard') or contains(normalize-space(.), 'Descartar')]"
 
 def easy_apply_modal_is_open() -> bool:
     '''True while an Easy Apply modal is still on screen and swallowing every click.'''
@@ -1415,10 +1468,13 @@ def apply_to_jobs(search_terms: list[str]) -> None:
                                     follow_company(modal)
                                     if wait_xp_click(modal, submit_button_xpath, 2, scrollTop=True): 
                                         date_applied = datetime.now()
-                                        if not wait_span_click(driver, "Done", 2): actions.send_keys(Keys.ESCAPE).perform()
+                                        # "Done" (EN) o "Listo" (ES) en el aviso de confirmación tras enviar.
+                                        # NECESITA VERIFICACIÓN EN RUNTIME: label ES ("Listo"/"Hecho") sin confirmar.
+                                        if not (wait_span_click(driver, "Done", 2) or wait_span_click(driver, "Listo", 2)): actions.send_keys(Keys.ESCAPE).perform()
                                     elif errored != "stuck" and cur_pause_before_submit and "Yes" in pyautogui.confirm("You submitted the application, didn't you 😒?", "Failed to find Submit Application!", ["Yes", "No"]):
                                         date_applied = datetime.now()
-                                        wait_span_click(driver, "Done", 2)
+                                        # "Done" (EN) o "Listo" (ES). NECESITA VERIFICACIÓN EN RUNTIME.
+                                        wait_span_click(driver, "Done", 2) or wait_span_click(driver, "Listo", 2)
                                     else:
                                         logger.warning("Since, Submit Application failed, discarding the job application...")
                                         # if screenshot_name == "Not Available":  screenshot_name = screenshot(driver, job_id, "Failed to click Submit application")
