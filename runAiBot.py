@@ -21,7 +21,6 @@ import sys
 import csv
 import re
 import time
-import urllib.parse
 import pyautogui
 
 # Raise the CSV field-size cap so very long job descriptions don't trip the writer.
@@ -373,111 +372,63 @@ def translate_filter_list(values: list[str]) -> list[str]:
     return expanded
 
 
-def build_search_url(search_term: str) -> str:
-    '''
-    Construye la URL de resultados de búsqueda de LinkedIn con los filtros pasados como
-    PARÁMETROS DE URL, en lugar de abrir el panel modal "Todos los filtros" y clicar opción
-    por opción (ese panel es inestable porque LinkedIn está retirando la búsqueda clásica).
-    LinkedIn acepta estos parámetros y resuelve del lado servidor.
-
-    Parámetros SÍ soportados (todos derivados de config/search.py):
-    - `keywords` (de `search_term`).
-    - `location` (de `search_location`): se pasa el texto libre; LinkedIn lo resuelve al `geoId`
-      correcto, igual que la caja de búsqueda. Es más fiable que `set_search_location()`, cuyo
-      input en la UI nueva es frágil (comparte clase con el input de keywords).
-    - `sortBy` (de `sort_by`), `f_TPR` (de `date_posted`), `f_E` (de `experience_level`),
-      `f_JT` (de `job_type`), `f_WT` (de `on_site`), `f_AL` (de `easy_apply_only`).
-
-    Filtros avanzados OMITIDOS de la URL (y por qué): `salary` (f_SB), `industry` (f_I),
-    `job_function` (f_F), `job_titles` (f_T), `companies` (f_C), la lista secundaria `location`,
-    `benefits`, `commitments`, `in_your_network`, `fair_chance_employer`. LinkedIn los indexa por
-    ID interno numérico (p. ej. `f_I=96`), no por texto libre, así que no se pueden derivar de
-    forma fiable de la config; construirlos produciría URLs inválidas o filtros ignorados.
-    `under_10_applicants` (f_EA) también se omite: el parámetro no está confirmado contra la UI
-    del usuario y su comportamiento varía.
-
-    Reglas: se omite cualquier parámetro vacío; los multi-valores (`f_E`, `f_JT`, `f_WT`) mapean
-    cada elemento de la lista de config, descartan los no mapeados y unen los códigos con coma.
-    '''
-    sort_by_map: dict[str, str] = {
-        "Most recent": "DD",
-        "Most relevant": "R",
-    }
-    date_posted_map: dict[str, str] = {
-        "Past 24 hours": "r86400",
-        "Past week": "r604800",
-        "Past month": "r2592000",
-        # "Any time" -> se omite (sin parámetro)
-    }
-    experience_map: dict[str, str] = {
-        "Internship": "1",
-        "Entry level": "2",
-        "Associate": "3",
-        "Mid-Senior level": "4",
-        "Director": "5",
-        "Executive": "6",
-    }
-    job_type_map: dict[str, str] = {
-        "Full-time": "F",
-        "Part-time": "P",
-        "Contract": "C",
-        "Temporary": "T",
-        "Internship": "I",
-        "Volunteer": "V",
-        "Other": "O",
-    }
-    on_site_map: dict[str, str] = {
-        "On-site": "1",
-        "Remote": "2",
-        "Hybrid": "3",
-    }
-
-    params: dict[str, str] = {"keywords": search_term}
-
-    if search_location.strip():
-        params["location"] = search_location.strip()
-
-    sort_code = sort_by_map.get(sort_by, "")
-    if sort_code:
-        params["sortBy"] = sort_code
-
-    date_code = date_posted_map.get(date_posted, "")
-    if date_code:
-        params["f_TPR"] = date_code
-
-    experience_codes = [experience_map[v] for v in experience_level if v in experience_map]
-    if experience_codes:
-        params["f_E"] = ",".join(experience_codes)
-
-    job_type_codes = [job_type_map[v] for v in job_type if v in job_type_map]
-    if job_type_codes:
-        params["f_JT"] = ",".join(job_type_codes)
-
-    on_site_codes = [on_site_map[v] for v in on_site if v in on_site_map]
-    if on_site_codes:
-        params["f_WT"] = ",".join(on_site_codes)
-
-    if easy_apply_only:
-        params["f_AL"] = "true"
-
-    return "https://www.linkedin.com/jobs/search/?" + urllib.parse.urlencode(params)
-
-
 def apply_filters() -> None:
     '''
-    Function to apply job search filters.
-
-    Los filtros ya NO se aplican aquí clicando el panel modal "Todos los filtros" (ese flujo era
-    inestable porque LinkedIn está retirando la búsqueda clásica). Ahora los filtros van en la URL
-    de resultados que construye `build_search_url()` y se navega en `apply_to_jobs()`. Esta función
-    solo conserva el diálogo opcional de pausa (`pause_after_filters`) para que el usuario revise
-    los resultados filtrados, y el bloque de diagnóstico por si algo falla.
-
-    Las funciones de clicado (`set_search_location`, `wait_span_click`, `multi_sel_noWait`,
-    `boolean_button_click`, `click_filter_option`) se conservan en el archivo pero ya no se llaman
-    desde aquí.
+    Function to apply job search filters
     '''
+    set_search_location()
+
     try:
+        recommended_wait = recommended_filter_wait(click_gap)
+
+        # element_to_be_clickable, not presence: the filters button renders before it's usable.
+        # Botón bilingüe: "All filters" (EN) o "Todos los filtros" (ES).
+        wait.until(EC.element_to_be_clickable((By.XPATH, '//button[normalize-space()="All filters" or normalize-space()="Todos los filtros"]'))).click()
+        buffer(recommended_wait)
+
+        # Traduce el valor de config (inglés) al label visible en español antes de clickar.
+        click_filter_option(driver, sort_by)
+        click_filter_option(driver, date_posted)
+        buffer(recommended_wait)
+
+        # Filtros estándar de LinkedIn: se traducen al español real de la UI antes de clickar.
+        multi_sel_noWait(driver, translate_filter_list(experience_level))
+        multi_sel_noWait(driver, companies, actions)
+        if experience_level or companies: buffer(recommended_wait)
+
+        multi_sel_noWait(driver, translate_filter_list(job_type))
+        multi_sel_noWait(driver, translate_filter_list(on_site))
+        if job_type or on_site: buffer(recommended_wait)
+
+        # Toggles booleanos bilingües: se pasa [inglés, español] y boolean_button_click prueba ambos.
+        if easy_apply_only: boolean_button_click(driver, actions, ["Easy Apply", "Solicitud sencilla"])
+        
+        multi_sel_noWait(driver, location)
+        multi_sel_noWait(driver, industry)
+        if location or industry: buffer(recommended_wait)
+
+        multi_sel_noWait(driver, job_function)
+        multi_sel_noWait(driver, job_titles)
+        if job_function or job_titles: buffer(recommended_wait)
+
+        # Toggles ES confirmados contra la UI real del usuario.
+        if under_10_applicants: boolean_button_click(driver, actions, ["Under 10 applicants", "Menos de 10 candidatos"])
+        if in_your_network: boolean_button_click(driver, actions, ["In your network", "En tu red"])
+        if fair_chance_employer: boolean_button_click(driver, actions, ["Fair Chance Employer", "Empleador con igualdad de oportunidades"])
+
+        # salary usa el mismo formato ($) en ambos idiomas; se pasa por el mismo helper por consistencia.
+        click_filter_option(driver, salary)
+        buffer(recommended_wait)
+        
+        multi_sel_noWait(driver, benefits)
+        multi_sel_noWait(driver, commitments)
+        if benefits or commitments: buffer(recommended_wait)
+
+        # Botón "Ver resultados": aria-label EN "Apply current filters to show N results".
+        # NECESITA VERIFICACIÓN EN RUNTIME: substring exacto del aria-label en español sin confirmar;
+        # se usa "resultados" / "mostrar" como substrings robustos (contains, minúsculas) además del EN.
+        show_results_button: WebElement = wait.until(EC.element_to_be_clickable((By.XPATH, '//button[contains(translate(@aria-label, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "apply current filters to show") or contains(translate(@aria-label, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "mostrar") or contains(translate(@aria-label, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "resultados")]')))
+        show_results_button.click()
         buffer(3)   # let the results reload settle before anything reads the list
 
         global pause_after_filters
@@ -1364,7 +1315,7 @@ def apply_to_jobs(search_terms: list[str]) -> None:
 
     if randomize_search_order:  shuffle(search_terms)
     for searchTerm in search_terms:
-        driver.get(build_search_url(searchTerm))
+        driver.get(f"https://www.linkedin.com/jobs/search/?keywords={searchTerm}")
         print_lg("\n________________________________________________________________________________________________________________________\n")
         print_lg(f'\n>>>> Now searching for "{searchTerm}" <<<<\n\n')
 
