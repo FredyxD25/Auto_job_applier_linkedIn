@@ -54,13 +54,21 @@ def get_managed_driver_path() -> str | None:
     gets wrong. The real fix is upstream: UC is abandoned, the author's successor is
     `nodriver`. Delete this whole shim when the bot moves off UC.
     """
+    # The whole point of this shim is the macOS Apple-Silicon bug (see docstring).
+    # On Windows and Linux, undetected_chromedriver downloads the correct driver on its
+    # own; forcing our own copy here actually BREAKS Windows, because the copy is named
+    # "chromedriver" with no ".exe" and Windows can't execute it (WinError 6/193).
+    # So: only run the shim on macOS, otherwise fall back to UC's own download.
+    if sys.platform != "darwin":
+        return None
     try:
         from selenium.webdriver.common.selenium_manager import SeleniumManager
         source = SeleniumManager().binary_paths(["--browser", "chrome"])["driver_path"]
         # UC rewrites the driver in place, so never hand it the shared ~/.cache/selenium
         # copy that other tools use. Work on our own copy, in UC's own data dir.
         os.makedirs(uc.Patcher.data_path, exist_ok=True)
-        target = os.path.join(uc.Patcher.data_path, "chromedriver")
+        driver_name = "chromedriver.exe" if sys.platform == "win32" else "chromedriver"
+        target = os.path.join(uc.Patcher.data_path, driver_name)
         shutil.copy2(source, target)                    # fresh copy each run, so it can never go stale against a Chrome update
         uc.Patcher(executable_path=target).auto()       # applies UC's cdc_ patch in place
         _adhoc_sign(target)                             # ...which breaks the code signature, hence the re-sign, in this order
