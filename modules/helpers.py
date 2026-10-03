@@ -247,12 +247,16 @@ def buffer(speed: int=0) -> None:
     '''
     if speed<=0:
         return
-    elif speed <= 1 and speed < 2:
-        return sleep(randint(6,10)*0.1)
+    # Anti-detección: LinkedIn marca la UNIFORMIDAD de los tiempos, no solo el volumen. Por eso
+    # a cada espera se le suma un jitter aleatorio pequeño (0-250ms) para que no haya dos pausas
+    # exactamente iguales, imitando la variación natural de un humano.
+    jitter = randint(0, 25) * 0.01
+    if speed <= 1 and speed < 2:
+        return sleep(randint(6,10)*0.1 + jitter)
     elif speed <= 2 and speed < 3:
-        return sleep(randint(10,18)*0.1)
+        return sleep(randint(10,18)*0.1 + jitter)
     else:
-        return sleep(randint(18,round(speed)*10)*0.1)
+        return sleep(randint(18,round(speed)*10)*0.1 + jitter)
 
 
 def human_type(target, text: str) -> None:

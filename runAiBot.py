@@ -21,6 +21,7 @@ import sys
 import csv
 import re
 import time
+import urllib.parse
 import pyautogui
 
 # Raise the CSV field-size cap so very long job descriptions don't trip the writer.
@@ -341,6 +342,46 @@ filter_label_translations: dict[str, list[str]] = {
 }
 
 
+# Mapeos config -> sufijo del id del input dentro del dropdown "pill" de la UI nueva de LinkedIn.
+# Los ids (p.ej. "experience-2") son idioma-independientes y están CONFIRMADOS contra el HTML real
+# capturado en logs/screenshots/apply_filters_panel.html. No se inventan ids.
+SORT_BY_ID_MAP: dict[str, str] = {
+    "Most recent": "DD",
+    "Most relevant": "R",
+}
+EXPERIENCE_ID_MAP: dict[str, str] = {
+    "Internship": "1",
+    "Entry level": "2",
+    "Associate": "3",
+    "Mid-Senior level": "4",
+    "Director": "5",
+    "Executive": "6",
+}
+DATE_POSTED_ID_MAP: dict[str, str] = {
+    "Past 24 hours": "r86400",
+    "Past week": "r604800",
+    "Past month": "r2592000",
+    # "Any time" -> se omite (no se selecciona ningún input del dropdown).
+}
+WORKPLACE_TYPE_ID_MAP: dict[str, str] = {
+    "On-site": "1",
+    "Remote": "2",
+    "Hybrid": "3",
+}
+# NECESITA VERIFICACIÓN EN RUNTIME: jobType NO aparece como pill en el HTML capturado (solo dentro
+# del panel "Todos los filtros"). Estos sufijos son los habituales de LinkedIn pero NO están
+# confirmados contra el HTML real; por eso jobType usa el fallback al panel "Todos los filtros".
+JOB_TYPE_ID_MAP: dict[str, str] = {
+    "Full-time": "F",
+    "Part-time": "P",
+    "Contract": "C",
+    "Temporary": "T",
+    "Volunteer": "V",
+    "Internship": "I",
+    "Other": "O",
+}
+
+
 def click_filter_option(driver: WebDriver, value: str, time: float = 5.0) -> WebElement | bool:
     '''
     Clicks a filter option (`sort_by`, `date_posted`, `salary`) whose visible label is `value`
@@ -370,6 +411,91 @@ def translate_filter_list(values: list[str]) -> list[str]:
             if label not in expanded:
                 expanded.append(label)
     return expanded
+
+
+def select_pill_filter(param_name: str, option_ids: list[str]) -> bool:
+    '''
+    Abre el dropdown "pill" del filtro `param_name` en la barra de filtros nueva de LinkedIn,
+    marca cada opción de `option_ids` (por id de input estable) y pulsa "Mostrar resultados"
+    DENTRO del dropdown para aplicar y cerrarlo.
+
+    - `param_name`: nombre del parámetro del filtro, p.ej. "sortBy", "experience",
+      "timePostedRange", "workplaceType". Se usa para localizar el pill `searchFilter_<param_name>`
+      (fallback: contenedor `div[@data-basic-filter-parameter-name='<param_name>']//button`).
+    - `option_ids`: lista de ids de input a seleccionar dentro del dropdown, p.ej.
+      ["experience-2", "experience-3"]. Se clica el `label[@for='<id>']` o, en su defecto,
+      el propio input por id vía JavaScript (los inputs suelen estar ocultos).
+    - Devuelve `True` si al menos una opción se seleccionó; `False` si no se pudo abrir el
+      dropdown o no se marcó ninguna opción. No lanza excepción: registra warning y continúa.
+    '''
+    if not option_ids:
+        return False
+
+    # (a) Abrir el dropdown "pill".
+    pill = try_xp(driver, f"//button[@id='searchFilter_{param_name}']", False)
+    if not pill:
+        pill = try_xp(driver, f"//div[@data-basic-filter-parameter-name='{param_name}']//button", False)
+    if not pill:
+        logger.warning("No se encontró el filtro pill '%s'", param_name)
+        return False
+
+    try:
+        scroll_to_view(driver, pill)
+        try:
+            pill.click()
+        except ElementClickInterceptedException:
+            driver.execute_script("arguments[0].click();", pill)
+    except Exception as open_e:
+        logger.warning("No se pudo abrir el dropdown del filtro '%s': %s", param_name, open_e)
+        return False
+    buffer(recommended_filter_wait(click_gap) or 1)   # dejar que el dropdown se despliegue
+
+    # (b) Marcar cada opción, manejando excepciones por opción sin abortar.
+    selected_any = False
+    for option_id in option_ids:
+        try:
+            label = try_xp(driver, f"//label[@for='{option_id}']", False)
+            if label:
+                scroll_to_view(driver, label)
+                try:
+                    label.click()
+                except ElementClickInterceptedException:
+                    driver.execute_script("arguments[0].click();", label)
+            else:
+                input_el = try_xp(driver, f"//input[@id='{option_id}']", False)
+                if not input_el:
+                    logger.warning("No se pudo seleccionar la opción '%s' del filtro '%s'", option_id, param_name)
+                    continue
+                driver.execute_script("arguments[0].click();", input_el)
+            selected_any = True
+            buffer(click_gap or 1)   # ritmo humano entre clics (anti-ban)
+        except Exception as opt_e:
+            logger.warning("No se pudo seleccionar la opción '%s' del filtro '%s': %s", option_id, param_name, opt_e)
+            continue
+
+    # (c) Pulsar "Mostrar resultados" DENTRO del dropdown para aplicar y cerrar.
+    # XPath bilingüe (ES/EN) y case-insensitive sobre el aria-label del botón primario.
+    show_results = try_xp(
+        driver,
+        "//button[contains(translate(@aria-label,'ABCDEFGHIJKLMNOPQRSTUVWXYZÁÉÍÓÚ','abcdefghijklmnopqrstuvwxyzáéíóú'),'mostrar resultados') "
+        "or contains(translate(@aria-label,'ABCDEFGHIJKLMNOPQRSTUVWXYZÁÉÍÓÚ','abcdefghijklmnopqrstuvwxyzáéíóú'),'aplicar el filtro actual') "
+        "or contains(translate(@aria-label,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'apply current filters to show')]",
+        False,
+    )
+    if show_results:
+        try:
+            scroll_to_view(driver, show_results)
+            try:
+                show_results.click()
+            except ElementClickInterceptedException:
+                driver.execute_script("arguments[0].click();", show_results)
+        except Exception as apply_e:
+            logger.warning("No se pudo pulsar 'Mostrar resultados' del filtro '%s': %s", param_name, apply_e)
+    else:
+        logger.warning("No se encontró el botón 'Mostrar resultados' del filtro '%s'", param_name)
+    buffer(recommended_filter_wait(click_gap) or 1)   # dejar recargar resultados
+
+    return selected_any
 
 
 def apply_filters() -> None:
@@ -444,6 +570,21 @@ def apply_filters() -> None:
             diag_shot = os.path.join(logs_folder_path, "screenshots", "apply_filters_fail.png")
             driver.save_screenshot(diag_shot)
             logger.warning("DIAG apply_filters fail -> Captura guardada en: %s", diag_shot)
+            # Volcar el HTML del panel de filtros (si está abierto) para poder escribir selectores
+            # correctos contra la UI nueva de LinkedIn (checkboxes, no spans).
+            diag_html_path = os.path.join(logs_folder_path, "screenshots", "apply_filters_panel.html")
+            panel_html = ""
+            for sel in (".//div[contains(@class,'search-reusables__filters-bar')]",
+                        ".//*[@role='dialog']", "//div[contains(@class,'artdeco-modal')]"):
+                el = try_xp(driver, sel, False)
+                if el:
+                    panel_html = el.get_attribute("outerHTML") or ""
+                    if panel_html: break
+            if not panel_html:
+                panel_html = driver.find_element(By.TAG_NAME, "body").get_attribute("outerHTML") or ""
+            with open(diag_html_path, "w", encoding="utf-8") as fh:
+                fh.write(panel_html)
+            logger.warning("DIAG apply_filters fail -> HTML del panel guardado en: %s (%d chars)", diag_html_path, len(panel_html))
         except Exception as diag_e:
             logger.warning("DIAG no se pudo capturar el estado de la página: %s", diag_e)
         # IMPORTANTE: LinkedIn está migrando fuera de la "búsqueda clásica" y el panel modal de
@@ -1315,7 +1456,17 @@ def apply_to_jobs(search_terms: list[str]) -> None:
 
     if randomize_search_order:  shuffle(search_terms)
     for searchTerm in search_terms:
-        driver.get(f"https://www.linkedin.com/jobs/search/?keywords={searchTerm}")
+        # Codificar keywords y ubicación: con espacios/acentos crudos ("Ingeniero de Datos",
+        # "Bogotá, Colombia") LinkedIn no interpretaba bien la URL y REDIRIGÍA a /jobs/ con un
+        # upsell de Premium, dejando al bot fuera de la página de resultados (sin panel de
+        # filtros, de ahí que todos los filtros fallaran). Incluir la ubicación en la URL es
+        # además más fiable que teclearla en el input (set_search_location queda como respaldo).
+        search_params = {"keywords": searchTerm}
+        if search_location.strip():
+            search_params["location"] = search_location.strip()
+        search_url = "https://www.linkedin.com/jobs/search/?" + urllib.parse.urlencode(search_params)
+        driver.get(search_url)
+        buffer(3)   # dar tiempo a que la página de resultados cargue antes de tocar filtros
         print_lg("\n________________________________________________________________________________________________________________________\n")
         print_lg(f'\n>>>> Now searching for "{searchTerm}" <<<<\n\n')
 
