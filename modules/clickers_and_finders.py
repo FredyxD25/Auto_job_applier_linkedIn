@@ -23,7 +23,7 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.common.action_chains import ActionChains
-from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException
+from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException, ElementClickInterceptedException
 
 
 # Matching helpers
@@ -117,7 +117,13 @@ def multi_sel_noWait(driver: WebDriver, texts: list, actions: ActionChains = Non
             button = pick_first_displayed(driver.find_elements(By.XPATH, text_xpath("span", text)))
             if not button: raise NoSuchElementException(f'No visible span matching "{text}"')
             scroll_to_view(driver, button)
-            button.click()
+            try:
+                button.click()
+            except ElementClickInterceptedException:
+                # El elemento existe pero algo lo tapa (overlay/tooltip/animación del panel).
+                # Un clic por JavaScript no lo bloquea un overlay, así que es el fallback fiable.
+                buffer(1)
+                driver.execute_script("arguments[0].click();", button)
             buffer(click_gap)
         except Exception as e:
             if actions: company_search_click(driver,actions,text)

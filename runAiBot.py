@@ -270,9 +270,21 @@ def set_search_location() -> None:
     if search_location.strip():
         try:
             print_lg(f'Setting search location as: "{search_location.strip()}"')
-            # Input bilingüe. NECESITA VERIFICACIÓN EN RUNTIME: aria-label en español sin confirmar
-            # ("Ciudad, estado o código postal" es la traducción esperada de "City, state, or zip code").
-            search_location_ele = try_xp(driver, ".//input[(@aria-label='City, state, or zip code' or @aria-label='Ciudad, estado o código postal') and not(@disabled)]", False) #  and not(@aria-hidden='true')]")
+            # Input de UBICACIÓN exclusivamente. OJO: la clase 'jobs-search-box__text-input' la
+            # comparten el input de palabras clave Y el de ubicación, así que NO sirve para
+            # distinguirlos (usarla hacía que se escribiera la ubicación en la caja de keywords).
+            # Señales que SOLO tiene el input de ubicación, en orden de preferencia:
+            #   - @id contiene "location" (idioma-independiente; el de keywords contiene "keywords").
+            #   - aria-label de ubicación: EN "City, state, or zip code"; ES "Ciudad, ... código postal".
+            # not(@disabled)/not(@aria-hidden) descartan el duplicado oculto que LinkedIn renderiza.
+            search_location_ele = try_xp(driver,
+                ".//input[(contains(@id,'jobs-search-box-location') "
+                "or contains(@id,'location') "
+                "or @aria-label='City, state, or zip code' "
+                "or contains(@aria-label,'código postal') "
+                "or contains(@aria-label,'zip code') "
+                "or contains(@aria-label,'Ciudad')) "
+                "and not(@disabled) and not(@aria-hidden='true')]", False)
             text_input(actions, search_location_ele, search_location, "Search Location")
         except ElementNotInteractableException:
             try_xp(driver, ".//label[@class='jobs-search-box__input-icon jobs-search-box__keywords-label']")
@@ -303,11 +315,29 @@ filter_label_translations: dict[str, list[str]] = {
     # sort_by
     "Most recent": ["Most recent", "Más recientes"],
     "Most relevant": ["Most relevant", "Más relevantes"],
-    # date_posted
-    "Any time": ["Any time", "En cualquier momento"],
-    "Past month": ["Past month", "Último mes"],
-    "Past week": ["Past week", "Última semana"],
+    # date_posted (textos ES CONFIRMADOS contra la UI real del usuario)
+    "Any time": ["Any time", "Cualquier momento", "En cualquier momento"],
+    "Past month": ["Past month", "Mes pasado", "Último mes"],
+    "Past week": ["Past week", "Semana pasada", "Última semana"],
     "Past 24 hours": ["Past 24 hours", "Últimas 24 horas"],
+    # experience_level (CONFIRMADO)
+    "Internship": ["Internship", "Prácticas"],
+    "Entry level": ["Entry level", "Sin experiencia"],
+    "Associate": ["Associate", "Algo de responsabilidad"],
+    "Mid-Senior level": ["Mid-Senior level", "Intermedio"],
+    "Director": ["Director", "Director"],
+    "Executive": ["Executive", "Ejecutivo"],
+    # job_type (CONFIRMADO)
+    "Full-time": ["Full-time", "Jornada completa"],
+    "Part-time": ["Part-time", "Media jornada"],
+    "Contract": ["Contract", "Contrato por obra"],
+    "Temporary": ["Temporary", "Temporal"],
+    "Volunteer": ["Volunteer", "Voluntario"],
+    "Other": ["Other", "Otro"],
+    # on_site / modalidad (CONFIRMADO)
+    "On-site": ["On-site", "Presencial"],
+    "Remote": ["Remote", "En remoto"],
+    "Hybrid": ["Hybrid", "Híbrido"],
 }
 
 
@@ -324,6 +354,22 @@ def click_filter_option(driver: WebDriver, value: str, time: float = 5.0) -> Web
         result = wait_span_click(driver, label, time)
         if result: return result
     return False
+
+
+def translate_filter_list(values: list[str]) -> list[str]:
+    '''
+    Expande una lista de valores de filtro de config (en inglés, ej. ["Entry level",
+    "Full-time"]) a la lista de etiquetas que `multi_sel_noWait` debe intentar clickar,
+    incluyendo la variante en español real de la UI de LinkedIn (ej. "Sin experiencia",
+    "Jornada completa"). Si un valor no está en `filter_label_translations`, se usa tal cual.
+    Así `multi_sel_noWait` prueba cada variante y acierta sea cual sea el idioma de la UI.
+    '''
+    expanded: list[str] = []
+    for value in values:
+        for label in filter_label_translations.get(value, [value]):
+            if label not in expanded:
+                expanded.append(label)
+    return expanded
 
 
 def apply_filters() -> None:
@@ -345,12 +391,13 @@ def apply_filters() -> None:
         click_filter_option(driver, date_posted)
         buffer(recommended_wait)
 
-        multi_sel_noWait(driver, experience_level) 
+        # Filtros estándar de LinkedIn: se traducen al español real de la UI antes de clickar.
+        multi_sel_noWait(driver, translate_filter_list(experience_level))
         multi_sel_noWait(driver, companies, actions)
         if experience_level or companies: buffer(recommended_wait)
 
-        multi_sel_noWait(driver, job_type)
-        multi_sel_noWait(driver, on_site)
+        multi_sel_noWait(driver, translate_filter_list(job_type))
+        multi_sel_noWait(driver, translate_filter_list(on_site))
         if job_type or on_site: buffer(recommended_wait)
 
         # Toggles booleanos bilingües: se pasa [inglés, español] y boolean_button_click prueba ambos.
@@ -364,8 +411,8 @@ def apply_filters() -> None:
         multi_sel_noWait(driver, job_titles)
         if job_function or job_titles: buffer(recommended_wait)
 
-        # NECESITA VERIFICACIÓN EN RUNTIME: labels en español de estos toggles sin confirmar.
-        if under_10_applicants: boolean_button_click(driver, actions, ["Under 10 applicants", "Menos de 10 solicitantes"])
+        # Toggles ES confirmados contra la UI real del usuario.
+        if under_10_applicants: boolean_button_click(driver, actions, ["Under 10 applicants", "Menos de 10 candidatos"])
         if in_your_network: boolean_button_click(driver, actions, ["In your network", "En tu red"])
         if fair_chance_employer: boolean_button_click(driver, actions, ["Fair Chance Employer", "Empleador con igualdad de oportunidades"])
 
@@ -390,7 +437,29 @@ def apply_filters() -> None:
 
     except Exception as e:
         logger.warning("Setting the preferences failed!")
-        pyautogui.confirm(f"Faced error while applying filters. Please make sure correct filters are selected, click on show results and click on any button of this dialog, I know it sucks. Can't turn off Pause after search when error occurs! ERROR: {e}", "Error applying filters", ["Doesn't look good, but Continue XD", "Look's good, Continue"])
+        # Diagnóstico: guardar URL, título y captura de la página en el momento del fallo.
+        try:
+            logger.warning("DIAG apply_filters fail -> URL actual: %s", driver.current_url)
+            logger.warning("DIAG apply_filters fail -> Título: %s", driver.title)
+            diag_shot = os.path.join(logs_folder_path, "screenshots", "apply_filters_fail.png")
+            driver.save_screenshot(diag_shot)
+            logger.warning("DIAG apply_filters fail -> Captura guardada en: %s", diag_shot)
+        except Exception as diag_e:
+            logger.warning("DIAG no se pudo capturar el estado de la página: %s", diag_e)
+        # IMPORTANTE: LinkedIn está migrando fuera de la "búsqueda clásica" y el panel modal de
+        # "Todos los filtros" ya no coincide con los selectores de arriba, así que los filtros
+        # detallados pueden fallar. Pero la búsqueda principal (keywords + ubicación + los
+        # dropdowns básicos de remoto/fecha) YA trajo resultados. Un fallo aquí NO debe abortar
+        # el run: solo hay que CERRAR el panel de filtros si quedó abierto, para que la lista de
+        # trabajos vuelva a ser accesible, y seguir aplicando a lo que la búsqueda ya encontró.
+        try:
+            # Cerrar el panel/modal de filtros si está abierto (botón de cierre o ESCAPE).
+            if not try_xp(driver, ".//button[@aria-label='Dismiss' or @aria-label='Cerrar' or @data-test-modal-close-btn]"):
+                actions.send_keys(Keys.ESCAPE).perform()
+            buffer(2)
+        except Exception as close_e:
+            logger.warning("No se pudo cerrar el panel de filtros tras el error: %s", close_e)
+        logger.warning("Continuando con los resultados de la búsqueda básica pese al fallo en los filtros detallados.")
         # print_lg(e)
 
 
